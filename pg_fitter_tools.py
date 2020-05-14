@@ -2,6 +2,7 @@ import numpy as np
 import scipy.optimize as opt
 from scipy import linalg
 import cv2
+import csv
 
 
 class photogrammetry_fitter:
@@ -127,3 +128,24 @@ def camera_poses(camera_rotations, camera_translations):
     orientations = camera_orientations(camera_rotations)
     positions = np.matmul(orientations, -camera_translations.reshape((-1,3,1))).squeeze()
     return orientations, positions
+
+
+def camera_extrinsics(orientations, positions):
+    rotation_matrices = orientations.transpose((0, 2, 1))
+    rotation_vectors = np.array([cv2.Rodrigues(r)[0] for r in rotation_matrices])
+    translation_vectors = np.matmul(rotation_matrices, -positions.reshape((-1, 3, 1))).squeeze()
+    return rotation_vectors, translation_vectors
+
+
+def build_camera_matrix(focal_length, principle_point):
+    return np.array([
+        [focal_length[0], 0, principle_point[0]],
+        [0, focal_length[1], principle_point[1]],
+        [0, 0, 1]])
+
+
+def read_3d_feature_locations(filename, delimiter="\t"):
+    with open(filename, mode='r') as file:
+        reader = csv.reader(file, delimiter=delimiter)
+        feature_locations = {r[0]: np.array([r[1], r[2], r[3]]).astype(float) for r in reader}
+    return feature_locations
