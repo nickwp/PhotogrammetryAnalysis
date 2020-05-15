@@ -164,3 +164,12 @@ def read_3d_feature_locations(filename, delimiter="\t"):
         reader = csv.reader(file, delimiter=delimiter)
         feature_locations = {r[0]: np.array([r[1], r[2], r[3]]).astype(float) for r in reader}
     return feature_locations
+
+
+def read_image_feature_locations(filename, delimiter="\t"):
+    image_feature_locations = {}
+    with open(filename, mode='r') as file:
+        reader = csv.reader(file, delimiter=delimiter)
+        for r in reader:
+            image_feature_locations.setdefault(r[0],{}).update({r[1]: np.array([r[2], r[3]]).astype(float)})
+    return image_feature_locations
