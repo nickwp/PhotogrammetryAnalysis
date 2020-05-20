@@ -222,7 +222,7 @@ def read_3d_feature_locations(filename, delimiter="\t"):
     return feature_locations
 
 
-def read_image_feature_locations(filename, delimiter="\t", offset = (0, 0)):
+def read_image_feature_locations(filename, delimiter="\t", offset=np.array([0., 0])):
     image_feature_locations = {}
     with open(filename, mode='r') as file:
         reader = csv.reader(file, delimiter=delimiter)
