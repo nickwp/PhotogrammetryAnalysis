@@ -36,30 +36,33 @@ class PhotogrammetryFitter:
         self.reco_locations = np.zeros((self.nfeatures, 3))
 
 
-    def estimate_camera_poses(self):
+    def estimate_camera_poses(self, flags=cv2.SOLVEPNP_ITERATIVE):
         self.camera_rotations = np.zeros((self.nimages, 3))
         self.camera_translations = np.zeros((self.nimages, 3))
+        reprojected_points = {}
         for i in range(self.nimages):
             indices = np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]
             (success, rotation_vector, translation_vector) = cv2.solvePnP(
                 self.seed_feature_locations[indices],
                 self.image_feature_locations[i][indices],
-                self.camera_matrix, self.distortion, flags=cv2.SOLVEPNP_ITERATIVE)
+                self.camera_matrix, self.distortion, flags=flags)
             if not success:
                 print("FAILED to find camera pose: camera", i)
-            rotation_matrix = cv2.Rodrigues(rotation_vector)[0]
-            if np.mean(rotation_matrix.dot(self.seed_feature_locations.transpose())[2] + translation_vector[2]) < 0:
-                rotation_matrix = [-1, -1, 1] * cv2.Rodrigues(rotation_vector)[0]
-                rotation_vector = cv2.Rodrigues(rotation_matrix)[0].squeeze()
-                translation_vector = -translation_vector
+#            rotation_matrix = cv2.Rodrigues(rotation_vector)[0]
+#            if np.mean(rotation_matrix.dot(self.seed_feature_locations.transpose())[2] + translation_vector[2]) < 0:
+#                print("Image {0}: camera facing away from points, attempting to fix".format(i))
+#                rotation_matrix = [-1, -1, 1] * cv2.Rodrigues(rotation_vector)[0]
+#                rotation_vector = cv2.Rodrigues(rotation_matrix)[0].squeeze()
+#                translation_vector = -translation_vector
             reprojected = cv2.projectPoints(self.seed_feature_locations[indices], rotation_vector, translation_vector,
                                             self.camera_matrix, self.distortion)[0].reshape((indices.size, 2))
+            reprojected_points[self.index_image[i]] = dict(zip([self.index_feature[ii] for ii in indices], reprojected))
             reprojection_errors = linalg.norm(reprojected - self.image_feature_locations[i][indices], axis=1)
             print("image", i, "reprojection errors:    average:", np.mean(reprojection_errors),
                   "   max:", max(reprojection_errors))
             self.camera_rotations[i, :] = rotation_vector.ravel()
             self.camera_translations[i, :] = translation_vector.ravel()
-        return self.camera_rotations, self.camera_translations
+        return self.camera_rotations, self.camera_translations, reprojected_points
 
     def reprojection_errors(self, camera_rotations, camera_translations, feature_locations):
         errors = []
@@ -73,7 +76,6 @@ class PhotogrammetryFitter:
 
     def reprojected_locations(self):
         reprojected = np.zeros(self.image_feature_locations.shape)
-        print(self.reco_locations.shape)
         for i in range(self.nimages):
             indices = np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]
             reprojected[i, indices] = cv2.projectPoints(self.reco_locations[indices], self.camera_rotations[i],
@@ -220,10 +222,10 @@ def read_3d_feature_locations(filename, delimiter="\t"):
     return feature_locations
 
 
-def read_image_feature_locations(filename, delimiter="\t"):
+def read_image_feature_locations(filename, delimiter="\t", offset = (0, 0)):
     image_feature_locations = {}
     with open(filename, mode='r') as file:
         reader = csv.reader(file, delimiter=delimiter)
         for r in reader:
-            image_feature_locations.setdefault(r[0],{}).update({r[1]: np.array([r[2], r[3]]).astype(float)})
+            image_feature_locations.setdefault(r[0],{}).update({r[1]: np.array([r[2], r[3]]).astype(float) + offset})
     return image_feature_locations
