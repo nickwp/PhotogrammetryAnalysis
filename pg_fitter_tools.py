@@ -30,11 +30,15 @@ class PhotogrammetryFitter:
                 self.image_feature_locations[i_index, f_index] = f
             i_index += 1
         self.camera_matrix = build_camera_matrix(focal_length, principle_point)
-        self.distortion = np.concatenate((radial_distortion, tangential_distortion)).reshape((4,1))
+        self.distortion = build_distortion_array(radial_distortion, tangential_distortion)
+        self.camera_rotations = np.zeros((self.nimages, 3))
+        self.camera_translations = np.zeros((self.nimages, 3))
+        self.reco_locations = np.zeros((self.nfeatures, 3))
+
 
     def estimate_camera_poses(self):
-        camera_rotations = np.zeros((self.nimages, 3))
-        camera_translations = np.zeros((self.nimages, 3))
+        self.camera_rotations = np.zeros((self.nimages, 3))
+        self.camera_translations = np.zeros((self.nimages, 3))
         for i in range(self.nimages):
             indices = np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]
             (success, rotation_vector, translation_vector) = cv2.solvePnP(
@@ -53,9 +57,9 @@ class PhotogrammetryFitter:
             reprojection_errors = linalg.norm(reprojected - self.image_feature_locations[i][indices], axis=1)
             print("image", i, "reprojection errors:    average:", np.mean(reprojection_errors),
                   "   max:", max(reprojection_errors))
-            camera_rotations[i, :] = rotation_vector.ravel()
-            camera_translations[i, :] = translation_vector.ravel()
-        return camera_rotations, camera_translations
+            self.camera_rotations[i, :] = rotation_vector.ravel()
+            self.camera_translations[i, :] = translation_vector.ravel()
+        return self.camera_rotations, self.camera_translations
 
     def reprojection_errors(self, camera_rotations, camera_translations, feature_locations):
         errors = []
@@ -67,7 +71,17 @@ class PhotogrammetryFitter:
             errors.extend(reprojected - self.image_feature_locations[i][indices])
         return np.ravel(errors)
 
-    def sum_squares(self, params):
+    def reprojected_locations(self):
+        reprojected = np.zeros(self.image_feature_locations.shape)
+        print(self.reco_locations.shape)
+        for i in range(self.nimages):
+            indices = np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]
+            reprojected[i, indices] = cv2.projectPoints(self.reco_locations[indices], self.camera_rotations[i],
+                                                        self.camera_translations[i], self.camera_matrix,
+                                                        self.distortion)[0].reshape((indices.size, 2))
+        return reprojected
+
+    def fit_errors(self, params):
         camera_rotations = params[:self.nimages * 3].reshape((-1, 3))
         camera_translations = params[self.nimages * 3:self.nimages * 6].reshape((-1, 3))
         feature_locations = params[self.nimages * 6:].reshape((-1, 3))
@@ -77,15 +91,15 @@ class PhotogrammetryFitter:
         x0 = np.concatenate((camera_rotations.flatten(),
                              camera_translations.flatten(),
                              self.seed_feature_locations.flatten()))
-        res = opt.least_squares(self.sum_squares, x0, verbose=2, method='lm', xtol=1e-6)
+        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='lm', xtol=1e-6)
         errors = linalg.norm(res.fun.reshape((-1, 2)), axis=1)
         print("mean reprojection error:", np.mean(errors), )
         print("max reprojection error:", max(errors))
-        camera_rotations = res.x[:self.nimages * 3].reshape((-1, 3))
-        camera_translations = res.x[self.nimages * 3:self.nimages * 6].reshape((-1, 3))
-        reco_locations = res.x[self.nimages * 6:].reshape((-1, 3))
-        reco_locations = {f : reco_locations[i] for f, i in self.feature_index.items()}
-        return camera_rotations, camera_translations, reco_locations
+        self.camera_rotations = res.x[:self.nimages * 3].reshape((-1, 3))
+        self.camera_translations = res.x[self.nimages * 3:self.nimages * 6].reshape((-1, 3))
+        self.reco_locations = res.x[self.nimages * 6:].reshape((-1, 3))
+        reco_locations = {f: self.reco_locations[i] for f, i in self.feature_index.items()}
+        return self.camera_rotations, self.camera_translations, reco_locations
 
     def fit(self):
         camera_rotations, camera_translations = self.estimate_camera_poses()
@@ -116,22 +130,28 @@ def project_points(points, camera_params):
     return points_proj
 
 
-def kabsch_errors(true_feature_locations, reco_feature_locations):
-    true_location_matrix = np.array(list(true_feature_locations.values()))
-    reco_location_matrix = np.array(list(reco_feature_locations.values()))
+def kabsch_transform(base_location_matrix, reco_location_matrix):
     translation = reco_location_matrix.mean(axis=0)
     reco_translated = reco_location_matrix - translation
-    true_translated = true_location_matrix - true_location_matrix.mean(axis=0)
-    C = true_translated.transpose().dot(reco_translated)/reco_translated.shape[0]
+    base_location_mean = base_location_matrix.mean(axis=0)
+    base_translated = base_location_matrix - base_location_mean
+    C = base_translated.transpose().dot(reco_translated)/reco_translated.shape[0]
     U, D, V = linalg.svd(C)
     S = np.eye(3)
     if linalg.det(U)*linalg.det(V) < 0:
         S[2, 2] = -1
     R = U.dot(S).dot(V)
     scale = (D*S).trace()/reco_translated.var(axis=0).sum()
-    reco_transformed = scale*R.dot(reco_translated.transpose()).transpose()
-    errors = reco_transformed - true_translated
-    return errors, true_translated, reco_transformed, scale, R, translation
+    reco_transformed = scale*R.dot(reco_translated.transpose()).transpose() + base_location_mean
+    return reco_transformed, scale, R, translation, base_location_mean
+
+
+def kabsch_errors(base_feature_locations, reco_feature_locations):
+    base_location_matrix = np.array(list(base_feature_locations.values()))
+    reco_location_matrix = np.array(list(reco_feature_locations.values()))
+    reco_transformed, scale, R, translation, base_location_mean = kabsch_transform(base_location_matrix, reco_location_matrix)
+    errors = reco_transformed - base_location_matrix
+    return errors, reco_transformed, scale, R, translation, base_location_mean
 
 
 def camera_orientations(camera_rotations):
@@ -156,7 +176,11 @@ def build_camera_matrix(focal_length, principle_point):
     return np.array([
         [focal_length[0], 0, principle_point[0]],
         [0, focal_length[1], principle_point[1]],
-        [0, 0, 1]])
+        [0, 0, 1]], dtype=float)
+
+
+def build_distortion_array(radial_distortion, tangential_distortion):
+    return np.concatenate((radial_distortion, tangential_distortion)).reshape((4, 1))
 
 
 def read_3d_feature_locations(filename, delimiter="\t"):
