@@ -105,6 +105,36 @@ class PhotogrammetryFitter:
         camera_rotations, camera_translations = self.estimate_camera_poses()
         return self.bundle_adjustment(camera_rotations, camera_translations)
 
+    def save_result(self, feature_filename, camera_filename):
+        reprojected = self.reprojected_locations()
+        errors = linalg.norm(reprojected - self.image_feature_locations, axis=2)
+        reco_transformed, scale, R, translation, location_mean = kabsch_transform(self.seed_feature_locations, self.reco_locations)
+        camera_orientations, camera_positions = camera_world_poses(self.camera_rotations, self.camera_translations)
+        camera_orientations = np.matmul(R, camera_orientations)
+        camera_positions = camera_positions - translation
+        camera_positions = scale * R.dot(camera_positions.transpose()).transpose() + location_mean
+        counts = np.sum(np.any(self.image_feature_locations != 0, axis=2), axis=0)
+        with open(feature_filename, 'w', newline='') as feature_file:
+            feature_file.write('FeatureID/C:nImages/I:ImagePosition[{0}][2]/I:ExpectedWorldPosition[3]/D:RecoWorldPosition[3]/D:'
+                               'ReprojectedPosition[{0}][2]/D:ReprojectionError[{0}]/D\n'.format(self.nimages))
+            writer = csv.writer(feature_file, delimiter='\t')
+            for f, i in self.feature_index.items():
+                row = [f, counts[i]]
+                row.extend(np.rint(self.image_feature_locations[:, i, :].ravel()).astype(int))
+                row.extend(self.seed_feature_locations[i, :])
+                row.extend(reco_transformed[i, :])
+                row.extend(reprojected[:, i, :].ravel())
+                row.extend(errors[:, i])
+                writer.writerow(row)
+        with open(camera_filename, 'w', newline='') as camera_file:
+            camera_file.write('CameraID/C:CameraPosition[3]/D:CameraOrientation[3][3]/D\n')
+            writer = csv.writer(camera_file, delimiter='\t')
+            for c, i in self.image_index.items():
+                row = [c]
+                row.extend(camera_positions[i])
+                row.extend(np.ravel(camera_orientations[i]))
+                writer.writerow(row)
+
 
 def rotate_points(points, rotation_vector):
     theta = linalg.norm(rotation_vector, axis=1)[:, np.newaxis]
