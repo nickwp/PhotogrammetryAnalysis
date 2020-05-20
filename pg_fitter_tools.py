@@ -117,7 +117,7 @@ class PhotogrammetryFitter:
         with open(feature_filename, 'w', newline='') as feature_file:
             feature_file.write('FeatureID/C:nImages/I:ImagePosition[{0}][2]/I:ExpectedWorldPosition[3]/D:RecoWorldPosition[3]/D:'
                                'ReprojectedPosition[{0}][2]/D:ReprojectionError[{0}]/D\n'.format(self.nimages))
-            writer = csv.writer(feature_file, delimiter='\t')
+            writer = csv.writer(feature_file, delimiter='\t', lineterminator='\n')
             for f, i in self.feature_index.items():
                 row = [f, counts[i]]
                 row.extend(np.rint(self.image_feature_locations[:, i, :].ravel()).astype(int))
@@ -125,10 +125,10 @@ class PhotogrammetryFitter:
                 row.extend(reco_transformed[i, :])
                 row.extend(reprojected[:, i, :].ravel())
                 row.extend(errors[:, i])
-                writer.writerow(row)
+                writer.writerow(row, )
         with open(camera_filename, 'w', newline='') as camera_file:
             camera_file.write('CameraID/C:CameraPosition[3]/D:CameraOrientation[3][3]/D\n')
-            writer = csv.writer(camera_file, delimiter='\t')
+            writer = csv.writer(camera_file, delimiter='\t', lineterminator='\n')
             for c, i in self.image_index.items():
                 row = [c]
                 row.extend(camera_positions[i])
