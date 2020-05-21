@@ -36,7 +36,7 @@ class PhotogrammetryFitter:
         self.reco_locations = np.zeros((self.nfeatures, 3))
 
 
-    def estimate_camera_poses(self, flags=cv2.SOLVEPNP_ITERATIVE):
+    def estimate_camera_poses(self, flags=cv2.SOLVEPNP_EPNP):
         self.camera_rotations = np.zeros((self.nimages, 3))
         self.camera_translations = np.zeros((self.nimages, 3))
         reprojected_points = {}
