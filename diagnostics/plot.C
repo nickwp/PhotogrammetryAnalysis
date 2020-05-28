@@ -77,11 +77,11 @@ void plot(){
   gROOT->ProcessLine(Form(".! mkdir -p images"));
 
   TTree t_photogram("t_photogram", "Photogrammetry Results");
-  //t_photogram.ReadFile("SK_demo1_features.txt");
+  //t_photogram.ReadFile("../results/SK_demo1_features.txt");
   //const int nMaxImages = 4;
-  //t_photogram.ReadFile("SK_demo2_features.txt");
+  //t_photogram.ReadFile("../results/SK_demo2_features.txt");
   //const int nMaxImages = 15;
-  t_photogram.ReadFile("SK_demo3_features.txt");
+  t_photogram.ReadFile("../results/SK_demo3_features.txt");
   const int nMaxImages = 11;
 
   Char_t          FeatureID[9];
