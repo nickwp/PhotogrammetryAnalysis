@@ -93,7 +93,7 @@ class PhotogrammetryFitter:
         x0 = np.concatenate((camera_rotations.flatten(),
                              camera_translations.flatten(),
                              self.seed_feature_locations.flatten()))
-        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='lm', xtol=1e-6)
+        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='trf', xtol=1e-6)
         errors = linalg.norm(res.fun.reshape((-1, 2)), axis=1)
         print("mean reprojection error:", np.mean(errors), )
         print("max reprojection error:", max(errors))
