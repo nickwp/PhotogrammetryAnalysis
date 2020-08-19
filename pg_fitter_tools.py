@@ -93,7 +93,16 @@ class PhotogrammetryFitter:
         x0 = np.concatenate((camera_rotations.flatten(),
                              camera_translations.flatten(),
                              self.seed_feature_locations.flatten()))
-        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='trf', xtol=1e-6)
+        initial_errors = self.fit_errors(x0)
+        jac_sparsity = np.zeros((initial_errors.shape[0], x0.shape[0]))
+        row = 0
+        for i in range(self.nimages):
+            for j in np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]:
+                jac_sparsity[row:row+2, 3*i:3*(i+1)] = 1
+                jac_sparsity[row:row+2, 3*(self.nimages+i):3*(self.nimages+i+1)] = 1
+                jac_sparsity[row:row+2, 6*self.nimages+3*j:6*self.nimages+3*(j+1)] = 1
+                row += 2
+        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='trf', xtol=1e-6, jac_sparsity=jac_sparsity)
         errors = linalg.norm(res.fun.reshape((-1, 2)), axis=1)
         print("mean reprojection error:", np.mean(errors), )
         print("max reprojection error:", max(errors))
