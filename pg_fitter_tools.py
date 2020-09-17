@@ -1,6 +1,8 @@
 import numpy as np
 import scipy.optimize as opt
 from scipy import linalg
+from scipy.spatial.transform import Rotation as R
+import matplotlib.pyplot as plt
 import cv2
 import csv
 
@@ -8,27 +10,31 @@ class PhotogrammetryFitter:
     def __init__(self, image_feature_locations, seed_feature_locations, focal_length, principle_point,
                  radial_distortion=(0., 0.), tangential_distortion=(0., 0.)):
         self.nimages = len(image_feature_locations)
-        self.nfeatures = len(seed_feature_locations)
+        features = set().union(*[f.keys() for f in image_feature_locations.values()])
+        self.nfeatures = len(features)
+#         self.nfeatures = len(seed_feature_locations)
+        print(self.nimages, "images with total of ", self.nfeatures, "features")
         self.seed_feature_locations = np.zeros((self.nfeatures, 3))
         self.image_feature_locations = np.zeros((self.nimages, self.nfeatures, 2))
         self.feature_index = {}
         self.index_feature = {}
-        f_index = 0
-        for f_key, f in seed_feature_locations.items():
-            self.feature_index[f_key] = f_index
-            self.index_feature[f_index] = f_key
-            self.seed_feature_locations[f_index] = f
-            f_index += 1
+        for i, f in enumerate(features):
+            self.feature_index[f] = i
+            self.index_feature[i] = f
+            self.seed_feature_locations[i] = seed_feature_locations[f]
+#         for i, (k, f) in enumerate(seed_feature_locations.items()):
+#             self.feature_index[k] = i
+#             self.index_feature[i] = k
+#             self.seed_feature_locations[i] = f
+
         self.image_index = {}
         self.index_image = {}
-        i_index = 0
-        for i_key, i in image_feature_locations.items():
+        for i_index, (i_key, i) in enumerate(image_feature_locations.items()):
             self.image_index[i_key] = i_index
             self.index_image[i_index] = i_key
             for f_key, f in i.items():
                 f_index = self.feature_index[f_key]
                 self.image_feature_locations[i_index, f_index] = f
-            i_index += 1
         self.camera_matrix = build_camera_matrix(focal_length, principle_point)
         self.distortion = build_distortion_array(radial_distortion, tangential_distortion)
         self.camera_rotations = np.zeros((self.nimages, 3))
@@ -48,12 +54,6 @@ class PhotogrammetryFitter:
                 self.camera_matrix, self.distortion, flags=flags)
             if not success:
                 print("FAILED to find camera pose: camera", i)
-#            rotation_matrix = cv2.Rodrigues(rotation_vector)[0]
-#            if np.mean(rotation_matrix.dot(self.seed_feature_locations.transpose())[2] + translation_vector[2]) < 0:
-#                print("Image {0}: camera facing away from points, attempting to fix".format(i))
-#                rotation_matrix = [-1, -1, 1] * cv2.Rodrigues(rotation_vector)[0]
-#                rotation_vector = cv2.Rodrigues(rotation_matrix)[0].squeeze()
-#                translation_vector = -translation_vector
             reprojected = cv2.projectPoints(self.seed_feature_locations[indices], rotation_vector, translation_vector,
                                             self.camera_matrix, self.distortion)[0].reshape((indices.size, 2))
             reprojected_points[self.index_image[i]] = dict(zip([self.index_feature[ii] for ii in indices], reprojected))
@@ -147,6 +147,64 @@ class PhotogrammetryFitter:
                 writer.writerow(row)
 
 
+class PhotogrammetrySimulator:
+    def __init__(self, feature_positions, focal_length, principle_point,
+                 camera_rotations, camera_translations,
+                 radial_distortion=(0., 0.), tangential_distortion=(0., 0.)):
+        self.camera_matrix = build_camera_matrix(focal_length, principle_point)
+        self.distortion = build_distortion_array(radial_distortion, tangential_distortion)
+        self.camera_rotations = camera_rotations
+        self.camera_translations = camera_translations
+        self.nimages = len(camera_rotations)
+        self.nfeatures = len(feature_positions)
+        self.image_feature_array = np.zeros((self.nimages, self.nfeatures, 2))
+        self.feature_index = {}
+        self.index_feature = {}
+        self.feature_positions = np.zeros((self.nfeatures, 3))
+        for f_index, (f_key, f) in enumerate(feature_positions.items()):
+            self.feature_index[f_key] = f_index
+            self.index_feature[f_index] = f_key
+            self.feature_positions[f_index] = f
+        for i, (r, t) in enumerate(zip(camera_rotations, camera_translations)):
+            rotation_matrix = cv2.Rodrigues(r)[0]
+            z_positions = (rotation_matrix @ self.feature_positions.T)[2] + t[2]
+            in_front = z_positions > 0
+            self.image_feature_array[i][in_front] = cv2.projectPoints(self.feature_positions[in_front],
+                                                                      r, t, self.camera_matrix,
+                                                                      self.distortion)[0].reshape((-1,2))
+    
+    def get_image_feature_locations(self, area_restrict = [[0, 4000], [0, 3000]],
+                                    min_feature_count = 2, pixel_error = None):
+        if pixel_error is None:
+            image_feature_array = self.image_feature_array
+        else:
+            image_feature_array = np.random.normal(self.image_feature_array, pixel_error*np.sqrt(2/np.pi))
+        good_feature_locations = ((self.image_feature_array[:,:,0] > area_restrict[0][0]) &
+                                  (self.image_feature_array[:,:,0] < area_restrict[0][1]) &
+                                  (self.image_feature_array[:,:,1] > area_restrict[1][0]) &
+                                  (self.image_feature_array[:,:,1] < area_restrict[1][1]))
+        bad_features = np.where(np.count_nonzero(good_feature_locations, axis=0) < min_feature_count)[0]
+        good_feature_locations[:, bad_features] = False
+        self.image_feature_locations = {i : {} for i in range(self.nimages)}
+        for i, f in np.argwhere(good_feature_locations):
+            self.image_feature_locations[i][self.index_feature[f]] = image_feature_array[i,f,:]
+        return self.image_feature_locations
+    
+    def show_images(self, image_feature_locations, area=[[0,4000],[0,3000]], image_set=None):
+        if image_set is None:
+            image_set = self.image_feature_locations.keys()
+        for k, v in self.image_feature_locations.items():
+            if k in image_set:
+                fig, ax = plt.subplots(figsize=(12,9))
+                coords = np.rint(np.stack(list(v.values())))
+                ax.scatter(coords[:,0], area[1][1]-coords[:,1], marker='o', s=0.2)
+                ax.set_xlim((area[0][0], area[0][1]))
+                ax.set_ylim((area[1][0], area[1][1]))
+                ax.axes.xaxis.set_visible(False)
+                ax.axes.yaxis.set_visible(False)
+                fig.tight_layout()
+
+
 def rotate_points(points, rotation_vector):
     theta = linalg.norm(rotation_vector, axis=1)[:, np.newaxis]
     with np.errstate(invalid='ignore'):
@@ -188,8 +246,8 @@ def kabsch_transform(base_location_matrix, reco_location_matrix):
 
 
 def kabsch_errors(base_feature_locations, reco_feature_locations):
-    base_location_matrix = np.array(list(base_feature_locations.values()))
     reco_location_matrix = np.array(list(reco_feature_locations.values()))
+    base_location_matrix = np.array([base_feature_locations[b] for b in reco_feature_locations.keys()])
     reco_transformed, scale, R, translation, base_location_mean = kabsch_transform(base_location_matrix, reco_location_matrix)
     errors = reco_transformed - base_location_matrix
     return errors, reco_transformed, scale, R, translation, base_location_mean
@@ -238,3 +296,16 @@ def read_image_feature_locations(filename, delimiter="\t", offset=np.array([0., 
         for r in reader:
             image_feature_locations.setdefault(r[0],{}).update({r[1]: np.array([r[2], r[3]]).astype(float) + offset})
     return image_feature_locations
+
+
+def camera_poses(cam_positions, cam_directions, cam_rolls, vertical_axis=1):
+    yaw = np.arctan2(-cam_directions[:,0],cam_directions[:,2])
+    pitch = np.arcsin(cam_directions[:,1])
+    if vertical_axis==1:
+        cam_rolls += np.pi # rotate 180 deg to prevent upside-down barrel-facing view
+    elif vertical_axis==2:
+        cam_rolls += np.pi/2 # rotate 90 deg to prevent portrait barrel-facing view
+    euler_angles = np.column_stack((yaw, pitch, cam_rolls))
+    camera_rotations = R.from_euler('yxz', euler_angles)
+    camera_translations = camera_rotations.apply(-cam_positions)
+    return camera_rotations.as_rotvec(), camera_translations
