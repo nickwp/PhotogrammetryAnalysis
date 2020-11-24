@@ -3,6 +3,7 @@ import scipy.optimize as opt
 from scipy import linalg
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import cv2
 import csv
 
@@ -89,7 +90,7 @@ class PhotogrammetryFitter:
         feature_locations = params[self.nimages * 6:].reshape((-1, 3))
         return self.reprojection_errors(camera_rotations, camera_translations, feature_locations)
 
-    def bundle_adjustment(self, camera_rotations, camera_translations):
+    def bundle_adjustment(self, camera_rotations, camera_translations, xtol=1e-6):
         x0 = np.concatenate((camera_rotations.flatten(),
                              camera_translations.flatten(),
                              self.seed_feature_locations.flatten()))
@@ -102,7 +103,7 @@ class PhotogrammetryFitter:
                 jac_sparsity[row:row+2, 3*(self.nimages+i):3*(self.nimages+i+1)] = 1
                 jac_sparsity[row:row+2, 6*self.nimages+3*j:6*self.nimages+3*(j+1)] = 1
                 row += 2
-        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='trf', xtol=1e-6, jac_sparsity=jac_sparsity)
+        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='trf', xtol=xtol, jac_sparsity=jac_sparsity)
         errors = linalg.norm(res.fun.reshape((-1, 2)), axis=1)
         print("mean reprojection error:", np.mean(errors), )
         print("max reprojection error:", max(errors))
@@ -190,14 +191,28 @@ class PhotogrammetrySimulator:
             self.image_feature_locations[i][self.index_feature[f]] = image_feature_array[i,f,:]
         return self.image_feature_locations
     
-    def show_images(self, image_feature_locations, area=[[0,4000],[0,3000]], image_set=None):
+    def show_images(self, image_feature_locations, area=[[0,4000],[0,3000]],
+                    inner_area=None, image_set=None):
         if image_set is None:
             image_set = self.image_feature_locations.keys()
         for k, v in self.image_feature_locations.items():
             if k in image_set:
                 fig, ax = plt.subplots(figsize=(12,9))
                 coords = np.rint(np.stack(list(v.values())))
-                ax.scatter(coords[:,0], area[1][1]-coords[:,1], marker='o', s=0.2)
+                if inner_area is not None:
+                    selection = ((coords[:,0] > inner_area[0][0]) &
+                                 (coords[:,0] < inner_area[0][1]) &
+                                 (coords[:,1] > inner_area[1][0]) &
+                                 (coords[:,1] < inner_area[1][1]))
+                    ax.scatter(coords[selection, 0], area[1][1]-coords[selection,1], marker='o', s=0.2, c='#000000')
+                    ax.scatter(coords[~selection,0], area[1][1]-coords[~selection,1], marker='o', s=0.2, c='#aaaaaa')
+                    rect = patches.Rectangle((inner_area[0][0], inner_area[1][0]),
+                                             inner_area[0][1]-inner_area[0][0],
+                                             inner_area[1][1]-inner_area[1][0],
+                                             linewidth=1,edgecolor='#aaaaaa',facecolor='none')
+                    ax.add_patch(rect)
+                else:
+                    ax.scatter(coords[:,0], area[1][1]-coords[:,1], marker='o', s=0.2, c='#000000')
                 ax.set_xlim((area[0][0], area[0][1]))
                 ax.set_ylim((area[1][0], area[1][1]))
                 ax.axes.xaxis.set_visible(False)
@@ -298,14 +313,31 @@ def read_image_feature_locations(filename, delimiter="\t", offset=np.array([0., 
     return image_feature_locations
 
 
+# +
+# def camera_poses(cam_positions, cam_directions, cam_rolls, vertical_axis=1):
+#     yaw = np.arctan2(-cam_directions[:,0],cam_directions[:,2])
+#     pitch = np.arcsin(cam_directions[:,1])
+#     if vertical_axis==1:
+#         cam_rolls += np.pi # rotate 180 deg to prevent upside-down barrel-facing view
+#     elif vertical_axis==2:
+#         cam_rolls += np.pi/2 # rotate 90 deg to prevent portrait barrel-facing view
+#     euler_angles = np.column_stack((yaw, pitch, cam_rolls))
+#     camera_rotations = R.from_euler('yxz', euler_angles)
+#     camera_translations = camera_rotations.apply(-cam_positions)
+#     return camera_rotations.as_rotvec(), camera_translations
+# -
+
 def camera_poses(cam_positions, cam_directions, cam_rolls, vertical_axis=1):
-    yaw = np.arctan2(-cam_directions[:,0],cam_directions[:,2])
-    pitch = np.arcsin(cam_directions[:,1])
     if vertical_axis==1:
+        yaw = np.arctan2(-cam_directions[:,0],cam_directions[:,2])
+        pitch = np.arcsin(cam_directions[:,1])
         cam_rolls += np.pi # rotate 180 deg to prevent upside-down barrel-facing view
+        euler_order = 'yxz'
     elif vertical_axis==2:
-        cam_rolls += np.pi/2 # rotate 90 deg to prevent portrait barrel-facing view
+        yaw = np.arctan2(cam_directions[:,0],cam_directions[:,1])
+        pitch = np.arccos(cam_directions[:,2])
+        euler_order = 'zxz'
     euler_angles = np.column_stack((yaw, pitch, cam_rolls))
-    camera_rotations = R.from_euler('yxz', euler_angles)
+    camera_rotations = R.from_euler(euler_order, euler_angles)
     camera_translations = camera_rotations.apply(-cam_positions)
     return camera_rotations.as_rotvec(), camera_translations
