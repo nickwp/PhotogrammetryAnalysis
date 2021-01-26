@@ -167,10 +167,7 @@ class PhotogrammetrySimulator:
             self.index_feature[f_index] = f_key
             self.feature_positions[f_index] = f
         for i, (r, t) in enumerate(zip(camera_rotations, camera_translations)):
-            rotation_matrix = cv2.Rodrigues(r)[0]
-            z_positions = (rotation_matrix @ self.feature_positions.T)[2] + t[2]
-            in_front = z_positions > 0
-            self.image_feature_array[i][in_front] = cv2.projectPoints(self.feature_positions[in_front],
+            self.image_feature_array[i] = cv2.projectPoints(self.feature_positions,
                                                                       r, t, self.camera_matrix,
                                                                       self.distortion)[0].reshape((-1,2))
     
@@ -192,32 +189,48 @@ class PhotogrammetrySimulator:
         return self.image_feature_locations
     
     def show_images(self, image_feature_locations, area=[[0,4000],[0,3000]],
-                    inner_area=None, image_set=None):
+                    inner_area=None, image_set=None, s=2, marker='o', figsize=(12,9)):
         if image_set is None:
             image_set = self.image_feature_locations.keys()
         for k, v in self.image_feature_locations.items():
             if k in image_set:
-                fig, ax = plt.subplots(figsize=(12,9))
+                fig, ax = plt.subplots(figsize=figsize)
                 coords = np.rint(np.stack(list(v.values())))
                 if inner_area is not None:
                     selection = ((coords[:,0] > inner_area[0][0]) &
                                  (coords[:,0] < inner_area[0][1]) &
                                  (coords[:,1] > inner_area[1][0]) &
                                  (coords[:,1] < inner_area[1][1]))
-                    ax.scatter(coords[selection, 0], area[1][1]-coords[selection,1], marker='o', s=0.2, c='#000000')
-                    ax.scatter(coords[~selection,0], area[1][1]-coords[~selection,1], marker='o', s=0.2, c='#aaaaaa')
+                    ax.scatter(coords[selection, 0], area[1][1]-coords[selection,1], marker=marker, s=s, c='#000000')
+                    ax.scatter(coords[~selection,0], area[1][1]-coords[~selection,1], marker=marker, s=s, c='#aaaaaa')
                     rect = patches.Rectangle((inner_area[0][0], inner_area[1][0]),
                                              inner_area[0][1]-inner_area[0][0],
                                              inner_area[1][1]-inner_area[1][0],
                                              linewidth=1,edgecolor='#aaaaaa',facecolor='none')
                     ax.add_patch(rect)
                 else:
-                    ax.scatter(coords[:,0], area[1][1]-coords[:,1], marker='o', s=0.2, c='#000000')
+                    ax.scatter(coords[:,0], area[1][1]-coords[:,1], marker=marker, s=s, c='#000000')
                 ax.set_xlim((area[0][0], area[0][1]))
                 ax.set_ylim((area[1][0], area[1][1]))
                 ax.axes.xaxis.set_visible(False)
                 ax.axes.yaxis.set_visible(False)
                 fig.tight_layout()
+                
+    def make_images(self, image_feature_locations, area=[[0,4000],[0,3000]], image_set=None):
+        images={}
+        if image_set is None:
+            image_set = self.image_feature_locations.keys()
+        for k, v in self.image_feature_locations.items():
+            if k in image_set:
+                data = np.zeros( (area[1][1]-area[1][0],area[0][1]-area[0][0], 3), dtype=np.uint8)
+                coords = np.rint(np.stack(list(v.values()))).astype(np.int32)
+                selection = ((coords[:,0] > area[0][0]) &
+                             (coords[:,0] < area[0][1]) &
+                             (coords[:,1] > area[1][0]) &
+                             (coords[:,1] < area[1][1]))
+                data[coords[selection,1], coords[selection,0],:] = 255
+                images[k] = data
+        return images
 
 
 def rotate_points(points, rotation_vector):
@@ -294,7 +307,10 @@ def build_camera_matrix(focal_length, principle_point):
 
 
 def build_distortion_array(radial_distortion, tangential_distortion):
-    return np.concatenate((radial_distortion, tangential_distortion)).reshape((4, 1))
+    if radial_distortion.shape[0] > 2:
+        return np.concatenate((radial_distortion[:2], tangential_distortion, radial_distortion[2:])).reshape((-1,1))
+    else:
+        return np.concatenate((radial_distortion, tangential_distortion)).reshape((4, 1))
 
 
 def read_3d_feature_locations(filename, delimiter="\t"):
