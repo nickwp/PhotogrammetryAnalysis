@@ -7,8 +7,9 @@ bolt_ring_radius = 29.8
 bolt_distance = 2 * bolt_ring_radius * np.sin(np.pi / 24)
 
 
-def get_bolt_locations_barrel(pmt_locations):
+def get_bolt_locations_barrel(pmt_locations, bolt_count = 24):
     bolt_locations = {}
+    step = 24 // bolt_count
     for f, pmt in pmt_locations.items():
         match = re.fullmatch(r"[0-1][0-9]{4}-00", f)
         if not match:
@@ -19,7 +20,7 @@ def get_bolt_locations_barrel(pmt_locations):
                 pmt[0] - pmt_bolt_offset * np.cos(phi) + bolt_ring_radius * np.sin(i * np.pi / 12.) * np.sin(phi),
                 pmt[1] - pmt_bolt_offset * np.sin(phi) - bolt_ring_radius * np.sin(i * np.pi / 12.) * np.cos(phi),
                 pmt[2] + bolt_ring_radius * np.cos(i * np.pi / 12.)])
-            for i in range(0, 24)})
+            for i in range(0, 24, step)})
     return bolt_locations
 
 
