@@ -90,20 +90,23 @@ class PhotogrammetryFitter:
         feature_locations = params[self.nimages * 6:].reshape((-1, 3))
         return self.reprojection_errors(camera_rotations, camera_translations, feature_locations)
 
-    def bundle_adjustment(self, camera_rotations, camera_translations, xtol=1e-6):
+    def bundle_adjustment(self, camera_rotations, camera_translations, xtol=1e-6, method='trf', use_sparsity = True):
         x0 = np.concatenate((camera_rotations.flatten(),
                              camera_translations.flatten(),
                              self.seed_feature_locations.flatten()))
         initial_errors = self.fit_errors(x0)
-        jac_sparsity = np.zeros((initial_errors.shape[0], x0.shape[0]))
-        row = 0
-        for i in range(self.nimages):
-            for j in np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]:
-                jac_sparsity[row:row+2, 3*i:3*(i+1)] = 1
-                jac_sparsity[row:row+2, 3*(self.nimages+i):3*(self.nimages+i+1)] = 1
-                jac_sparsity[row:row+2, 6*self.nimages+3*j:6*self.nimages+3*(j+1)] = 1
-                row += 2
-        res = opt.least_squares(self.fit_errors, x0, verbose=2, method='trf', xtol=xtol, jac_sparsity=jac_sparsity)
+        if method == 'lm' or use_sparsity == False:
+            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol)
+        else:
+            jac_sparsity = np.zeros((initial_errors.shape[0], x0.shape[0]))
+            row = 0
+            for i in range(self.nimages):
+                for j in np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]:
+                    jac_sparsity[row:row+2, 3*i:3*(i+1)] = 1
+                    jac_sparsity[row:row+2, 3*(self.nimages+i):3*(self.nimages+i+1)] = 1
+                    jac_sparsity[row:row+2, 6*self.nimages+3*j:6*self.nimages+3*(j+1)] = 1
+                    row += 2
+            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol, jac_sparsity=jac_sparsity)
         errors = linalg.norm(res.fun.reshape((-1, 2)), axis=1)
         print("mean reprojection error:", np.mean(errors), )
         print("max reprojection error:", max(errors))
@@ -167,7 +170,10 @@ class PhotogrammetrySimulator:
             self.index_feature[f_index] = f_key
             self.feature_positions[f_index] = f
         for i, (r, t) in enumerate(zip(camera_rotations, camera_translations)):
-            self.image_feature_array[i] = cv2.projectPoints(self.feature_positions,
+            rotation_matrix = cv2.Rodrigues(r)[0]
+            z_positions = (rotation_matrix @ self.feature_positions.T)[2] + t[2]
+            in_front = z_positions > 0
+            self.image_feature_array[i][in_front] = cv2.projectPoints(self.feature_positions[in_front],
                                                                       r, t, self.camera_matrix,
                                                                       self.distortion)[0].reshape((-1,2))
     
