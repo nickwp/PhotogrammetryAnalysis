@@ -71,19 +71,31 @@ TH2F *GetLogTH1(TString hName, TString hTitle, Int_t nBinsX, Double_t xMin, Doub
   return hlog;
 }
 
+TTree *t_photogram;
 
 void plot(){
 
   gROOT->ProcessLine(Form(".! mkdir -p images"));
 
-  TTree t_photogram("t_photogram", "Photogrammetry Results");
-  //t_photogram.ReadFile("../results/SK_demo1_features.txt");
-  //const int nMaxImages = 4;
-  //t_photogram.ReadFile("../results/SK_demo2_features.txt");
-  //const int nMaxImages = 15;
-  t_photogram.ReadFile("../results/SK_demo3_features.txt");
-  const int nMaxImages = 11;
+  t_photogram = new TTree("t_photogram", "Photogrammetry Results");
 
+  /*
+  t_photogram->ReadFile("../results/SK_demo3_features.txt");
+  const int nMaxImages = 11;
+  const int nFeatureSets = 2;
+  TString featureTitles[nFeatureSets] = {"Dynode/Reflection", "Bolts"};
+
+  TH2F *h_ReprojectionErrorSpatial = GetLogTH1("h_ReprojectionErrorSpatial", "Photo Pixel Space; Distance from Center (pixels); Reprojection Error (pixels); Number of Features*Images", 20, 0.05, 10, 25, 0, 1500);
+  /**/  
+
+  t_photogram->ReadFile("../results/full_ring/SK_ring_features.txt");
+  const int nMaxImages = 51;
+  const int nFeatureSets = 1;
+  TString featureTitles[nFeatureSets] = {"Ring Center"};
+
+  TH2F *h_ReprojectionErrorSpatial = GetLogTH1("h_ReprojectionErrorSpatial", "Photo Pixel Space; Distance from Center (pixels); Reprojection Error (pixels); Number of Features*Images", 20, 0.05, 30, 25, 0, 2500);
+  /**/
+  
   Char_t          FeatureID[9];
   Int_t           nImages;
   Int_t           ImagePosition[nMaxImages][2];
@@ -92,17 +104,17 @@ void plot(){
   Double_t        ReprojectedPosition[nMaxImages][2];
   Double_t        ReprojectionError[nMaxImages];
   
-  t_photogram.SetBranchAddress("FeatureID", FeatureID);
-  t_photogram.SetBranchAddress("nImages", &nImages);
-  t_photogram.SetBranchAddress("ImagePosition", ImagePosition);
-  t_photogram.SetBranchAddress("ExpectedWorldPosition", ExpectedWorldPosition);
-  t_photogram.SetBranchAddress("RecoWorldPosition", RecoWorldPosition);
-  t_photogram.SetBranchAddress("ReprojectedPosition", ReprojectedPosition);
-  t_photogram.SetBranchAddress("ReprojectionError", ReprojectionError);
-
+  t_photogram->SetBranchAddress("FeatureID", FeatureID);
+  t_photogram->SetBranchAddress("nImages", &nImages);
+  t_photogram->SetBranchAddress("ImagePosition", ImagePosition);
+  t_photogram->SetBranchAddress("ExpectedWorldPosition", ExpectedWorldPosition);
+  t_photogram->SetBranchAddress("RecoWorldPosition", RecoWorldPosition);
+  t_photogram->SetBranchAddress("ReprojectedPosition", ReprojectedPosition);
+  t_photogram->SetBranchAddress("ReprojectionError", ReprojectionError);
+  
   TCanvas *c_nimages = new TCanvas(1);
-  t_photogram.Draw("nImages");
-  TString s_title = Form("Total Number of Features = %lld; Number of Matched Images; Number of Features", t_photogram.GetEntries());
+  t_photogram->Draw("nImages");
+  TString s_title = Form("Total Number of Features = %lld; Number of Matched Images; Number of Features", t_photogram->GetEntries());
   TH1D *htemp = (TH1D*)gPad->GetPrimitive("htemp");
   htemp->SetTitle(s_title);
   htemp->SetLineWidth(3);
@@ -112,18 +124,14 @@ void plot(){
   TH1F *h_ReprojectionError[nMaxImages];
   TH1F *h_ReprojectionErrorAvg[nMaxImages];
   
-  //TH2F *h_ReprojectionErrorSpatial = GetLogTH1("h_ReprojectionErrorSpatial", "Photo Pixel Space; Distance from Center (pixels); Reprojection Error (pixels); Number of Features*Images", 20, 0.05, 10, 25, 0, 1500);
-  TH2F *h_ReprojectionErrorSpatial = GetLogTH1("h_ReprojectionErrorSpatial", "Photo Pixel Space; Distance from Center (pixels); Reprojection Error (pixels); Number of Features*Images", 20, 0.05, 12.5, 25, 0, 2500);
-  
   TGraph2D *g_ReprojectionError[nMaxImages];
   int nGraphPoints[nMaxImages] = {0};
   
-  const int nFeatureSets = 2;
   TH1F *h_ReprojectionErrorAvg_Features[nFeatureSets];
   
   TCanvas *c_ReprojectionError = new TCanvas(1);
   //c_ReprojectionError->SetLogy(1);
-  t_photogram.Draw("ReprojectionError","ReprojectionError>0");
+  t_photogram->Draw("ReprojectionError","ReprojectionError>0");
 
   htemp = (TH1D*)gPad->GetPrimitive("htemp");
   htemp->SetTitle(";Reprojection Error (pixels); Number of Features*Images");
@@ -154,9 +162,9 @@ void plot(){
 
   
   
-  for (int ientry=0; ientry<t_photogram.GetEntries(); ientry++) {
+  for (int ientry=0; ientry<t_photogram->GetEntries(); ientry++) {
 
-    t_photogram.GetEntry(ientry);
+    t_photogram->GetEntry(ientry);
 
     char * pEnd;
     long int PMT_ID = strtol (FeatureID, &pEnd, 10);
@@ -186,7 +194,7 @@ void plot(){
     h_ReprojectionErrorAvg[0]->Fill(AvgError);
     h_ReprojectionErrorAvg[nImages-1]->Fill(AvgError);
 
-    if (!Feature_ID) // Dynode/reflection
+    if (!Feature_ID) // Dynode/reflection/center
       h_ReprojectionErrorAvg_Features[Feature_ID]->Fill(AvgError);
     else { // Bolts
       //int feature_idx = (Feature_ID-1)/6+1;
@@ -214,7 +222,8 @@ void plot(){
     
     h_ReprojectionError[iimg]->SetLineWidth(3);
     if (!iimg) h_ReprojectionError[iimg]->SetLineWidth(5);
-    h_ReprojectionError[iimg]->SetLineColor(iimg-1 + (!iimg)*2);
+    //h_ReprojectionError[iimg]->SetLineColor(iimg-1 + (!iimg)*2);
+    h_ReprojectionError[iimg]->SetLineColor(iimg+1);
 
     h_ReprojectionError[iimg]->Draw("same");
 
@@ -261,7 +270,8 @@ void plot(){
     h_ReprojectionErrorAvg[iimg]->SetTitle(";Average Reprojection Error (pixels); Number of Features");
     h_ReprojectionErrorAvg[iimg]->SetLineWidth(3);
     if (!iimg) h_ReprojectionErrorAvg[iimg]->SetLineWidth(5);
-    h_ReprojectionErrorAvg[iimg]->SetLineColor(iimg-1 + (!iimg)*2);
+    //h_ReprojectionErrorAvg[iimg]->SetLineColor(iimg-1 + (!iimg)*2);
+    h_ReprojectionErrorAvg[iimg]->SetLineColor(iimg+1);
 
     if (!iimg)
       h_ReprojectionErrorAvg[iimg]->Draw();
@@ -294,23 +304,24 @@ void plot(){
     if (!iset) h_ReprojectionErrorAvg_Features[iset]->SetLineWidth(5);
     h_ReprojectionErrorAvg_Features[iset]->SetLineColor(iset+2);
 
-    if (!iset)
-      h_ReprojectionErrorAvg[0]->Draw();
-    
-    h_ReprojectionErrorAvg_Features[iset]->Draw("same");
+    TString leg_entry;
 
-    //TString leg_entry = Form("Bolt set %d", iset);
-    TString leg_entry = "Bolts";
     if (!iset) {
+      h_ReprojectionErrorAvg[0]->Draw();
+
       leg_entry = "Total";
       leg_entry += Form(" (%.2f pixels)", h_ReprojectionErrorAvg[0]->GetMean());
       leg_reproj_features->AddEntry(h_ReprojectionErrorAvg[0], leg_entry, "l");
-
-      leg_entry = "Dynode/Reflection";
     }
-
-    leg_entry += Form(" (%.2f pixels)", h_ReprojectionErrorAvg_Features[iset]->GetMean());
-    leg_reproj_features->AddEntry(h_ReprojectionErrorAvg_Features[iset], leg_entry, "l");
+    
+    if (nFeatureSets>1) {
+      leg_entry = featureTitles[iset];
+      
+      h_ReprojectionErrorAvg_Features[iset]->Draw("same");
+      
+      leg_entry += Form(" (%.2f pixels)", h_ReprojectionErrorAvg_Features[iset]->GetMean());
+      leg_reproj_features->AddEntry(h_ReprojectionErrorAvg_Features[iset], leg_entry, "l");
+    }
 
   }
   leg_reproj_features->Draw();
@@ -327,8 +338,9 @@ void plot(){
   for (int iimg=0; iimg<nMaxImages; iimg++) {
     g_ReprojectionError[iimg]->SetMarkerStyle(20);
     g_ReprojectionError[iimg]->SetMarkerSize(.2);
-
-    g_ReprojectionError[iimg]->Draw("PCOL SAME");  
+    g_ReprojectionError[iimg]->SetMaximum(15);
+    
+    g_ReprojectionError[iimg]->Draw("PCOL SAME");
   }
   c_imagespace->SetPhi(0);
   c_imagespace->SetTheta(90);
