@@ -117,9 +117,9 @@ class PhotogrammetryFitter:
                              self.seed_feature_locations.flatten()))
         if fit_cam:
             x0 = np.concatenate((self.camera_matrix[(0,1,0,1),(0,1,2,2)], self.distortion.flatten(), x0))
-        initial_errors = fit_errors(x0, max_error, fit_cam)
+        initial_errors = self.fit_errors(x0, max_error, fit_cam)
         if method == 'lm' or use_sparsity == False:
-            res = opt.least_squares(fit_errors, x0, verbose=2, method=method, xtol=xtol)
+            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol)
         else:
             jac_sparsity = lil_matrix((initial_errors.shape[0], x0.shape[0]), dtype=int)
             row = 0
@@ -136,7 +136,7 @@ class PhotogrammetryFitter:
 #            print(jac_sparsity.shape, row)
 #            print(list(jac_sparsity.sum(axis=0)))
 #            print(list(jac_sparsity.sum(axis=1)))
-            res = opt.least_squares(fit_errors, x0, verbose=2, method=method, xtol=xtol, jac_sparsity=jac_sparsity,
+            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol, jac_sparsity=jac_sparsity,
                                    kwargs={"max_error":max_error, "fit_cam": fit_cam})
         errors = linalg.norm(self.fit_errors(res.x, fit_cam=fit_cam).reshape((-1, 2)), axis=1)
         if not self.quiet:
