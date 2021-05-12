@@ -2,6 +2,7 @@ import numpy as np
 import scipy.optimize as opt
 from scipy import linalg
 from scipy.spatial.transform import Rotation as R
+from scipy.sparse import lil_matrix
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import cv2
@@ -9,12 +10,14 @@ import csv
 
 class PhotogrammetryFitter:
     def __init__(self, image_feature_locations, seed_feature_locations, focal_length, principle_point,
-                 radial_distortion=(0., 0.), tangential_distortion=(0., 0.)):
+                 radial_distortion=(0., 0.), tangential_distortion=(0., 0.), quiet=False):
         self.nimages = len(image_feature_locations)
         features = set().union(*[f.keys() for f in image_feature_locations.values()])
         self.nfeatures = len(features)
 #         self.nfeatures = len(seed_feature_locations)
-        print(self.nimages, "images with total of ", self.nfeatures, "features")
+        self.quiet = quiet
+        if not self.quiet:
+            print(self.nimages, "images with total of ", self.nfeatures, "features")
         self.seed_feature_locations = np.zeros((self.nfeatures, 3))
         self.image_feature_locations = np.zeros((self.nimages, self.nfeatures, 2))
         self.feature_index = {}
@@ -59,13 +62,19 @@ class PhotogrammetryFitter:
                                             self.camera_matrix, self.distortion)[0].reshape((indices.size, 2))
             reprojected_points[self.index_image[i]] = dict(zip([self.index_feature[ii] for ii in indices], reprojected))
             reprojection_errors = linalg.norm(reprojected - self.image_feature_locations[i][indices], axis=1)
-            print("image", i, "reprojection errors:    average:", np.mean(reprojection_errors),
-                  "   max:", max(reprojection_errors))
+            if not self.quiet:
+                print(f"image {i} reprojection errors:    average:"
+                      f"{np.mean(reprojection_errors)}   max: {max(reprojection_errors)}")
             self.camera_rotations[i, :] = rotation_vector.ravel()
             self.camera_translations[i, :] = translation_vector.ravel()
         return self.camera_rotations, self.camera_translations, reprojected_points
 
-    def reprojection_errors(self, camera_rotations, camera_translations, feature_locations):
+    def reprojection_errors(self, camera_rotations, camera_translations, feature_locations,
+                            camera_matrix=None, distortion=None):
+        if camera_matrix is None:
+            camera_matrix = self.camera_matrix
+        if distortion is None:
+            distortion = self.distortion
         errors = []
         for i in range(self.nimages):
             indices = np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]
@@ -84,37 +93,69 @@ class PhotogrammetryFitter:
                                                         self.distortion)[0].reshape((indices.size, 2))
         return reprojected
 
-    def fit_errors(self, params):
-        camera_rotations = params[:self.nimages * 3].reshape((-1, 3))
-        camera_translations = params[self.nimages * 3:self.nimages * 6].reshape((-1, 3))
-        feature_locations = params[self.nimages * 6:].reshape((-1, 3))
-        return self.reprojection_errors(camera_rotations, camera_translations, feature_locations)
+    def fit_errors(self, params, fit_cam=False, max_error=None):
+        if fit_cam:
+            offset = 4+self.distortion.shape[0]
+            camera_matrix = build_camera_matrix(params[:2],params[2:4])
+            distortion = params[4:offset].reshape((-1,1))
+        else:
+            offset = 0
+            camera_matrix = self.camera_matrix
+            distortion = self.distortion
+        camera_rotations = params[offset:offset+self.nimages*3].reshape((-1, 3))
+        camera_translations = params[offset+self.nimages*3:offset+self.nimages*6].reshape((-1, 3))
+        feature_locations = params[offset+self.nimages*6:].reshape((-1, 3))
+        errors = self.reprojection_errors(camera_rotations, camera_translations, feature_locations, camera_matrix, distortion)
+        if max_error is None:
+            return errors
+        return np.minimum(errors, max_error)
 
-    def bundle_adjustment(self, camera_rotations, camera_translations, xtol=1e-6, method='trf', use_sparsity = True):
+    def bundle_adjustment(self, camera_rotations, camera_translations, xtol=1e-6, method='trf', use_sparsity = True,
+                         max_error = None, fit_cam = False):
         x0 = np.concatenate((camera_rotations.flatten(),
                              camera_translations.flatten(),
                              self.seed_feature_locations.flatten()))
-        initial_errors = self.fit_errors(x0)
+        if fit_cam:
+            x0 = np.concatenate((self.camera_matrix[(0,1,0,1),(0,1,2,2)], self.distortion.flatten(), x0))
+        initial_errors = self.fit_errors(x0, max_error, fit_cam)
         if method == 'lm' or use_sparsity == False:
             res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol)
         else:
-            jac_sparsity = np.zeros((initial_errors.shape[0], x0.shape[0]))
+            jac_sparsity = lil_matrix((initial_errors.shape[0], x0.shape[0]), dtype=int)
             row = 0
+            offset = 0
+            if fit_cam:
+                offset = 4+self.distortion.shape[0]
+                jac_sparsity[:,:offset] = 1
             for i in range(self.nimages):
                 for j in np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]:
-                    jac_sparsity[row:row+2, 3*i:3*(i+1)] = 1
-                    jac_sparsity[row:row+2, 3*(self.nimages+i):3*(self.nimages+i+1)] = 1
-                    jac_sparsity[row:row+2, 6*self.nimages+3*j:6*self.nimages+3*(j+1)] = 1
+                    jac_sparsity[row:row+2, offset+3*i:offset+3*(i+1)] = 1
+                    jac_sparsity[row:row+2, offset+3*(self.nimages+i):offset+3*(self.nimages+i+1)] = 1
+                    jac_sparsity[row:row+2, offset+6*self.nimages+3*j:offset+6*self.nimages+3*(j+1)] = 1
                     row += 2
-            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol, jac_sparsity=jac_sparsity)
-        errors = linalg.norm(res.fun.reshape((-1, 2)), axis=1)
-        print("mean reprojection error:", np.mean(errors), )
-        print("max reprojection error:", max(errors))
-        self.camera_rotations = res.x[:self.nimages * 3].reshape((-1, 3))
-        self.camera_translations = res.x[self.nimages * 3:self.nimages * 6].reshape((-1, 3))
-        self.reco_locations = res.x[self.nimages * 6:].reshape((-1, 3))
+#            print(jac_sparsity.shape, row)
+#            print(list(jac_sparsity.sum(axis=0)))
+#            print(list(jac_sparsity.sum(axis=1)))
+            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol, jac_sparsity=jac_sparsity,
+                                   kwargs={"max_error":max_error, "fit_cam": fit_cam})
+        errors = linalg.norm(self.fit_errors(res.x, fit_cam=fit_cam).reshape((-1, 2)), axis=1)
+        if not self.quiet:
+            print("mean reprojection error:", np.mean(errors), )
+            print("max reprojection error:", max(errors))
+        if fit_cam:
+            camera_matrix = build_camera_matrix(res.x[:2],res.x[2:4])
+            offset = 4+self.distortion.shape[0]
+            distortion = res.x[4:offset].reshape((-1,1))
+        else:
+            offset = 0
+        self.camera_rotations = res.x[offset:offset+self.nimages*3].reshape((-1, 3))
+        self.camera_translations = res.x[offset+self.nimages*3:offset+self.nimages*6].reshape((-1, 3))
+        self.reco_locations = res.x[offset+self.nimages*6:].reshape((-1, 3))
         reco_locations = {f: self.reco_locations[i] for f, i in self.feature_index.items()}
-        return self.camera_rotations, self.camera_translations, reco_locations
+        if fit_cam:
+            return self.camera_rotations, self.camera_translations, reco_locations, camera_matrix, distortion
+        else:
+            return self.camera_rotations, self.camera_translations, reco_locations
 
     def fit(self):
         camera_rotations, camera_translations = self.estimate_camera_poses()
