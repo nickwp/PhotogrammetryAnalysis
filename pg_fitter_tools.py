@@ -110,53 +110,97 @@ class PhotogrammetryFitter:
             return errors
         return np.minimum(errors, max_error)
 
+    def fit_errors_curvefit(self, x_dummy, *args, fit_cam=False, max_error=None):
+        params=np.array(args)
+        if fit_cam:
+            offset = 4+self.distortion.shape[0]
+            camera_matrix = build_camera_matrix(params[:2],params[2:4])
+            distortion = params[4:offset].reshape((-1,1))
+        else:
+            offset = 0
+            camera_matrix = self.camera_matrix
+            distortion = self.distortion
+        camera_rotations = params[offset:offset+self.nimages*3].reshape((-1, 3))
+        camera_translations = params[offset+self.nimages*3:offset+self.nimages*6].reshape((-1, 3))
+        feature_locations = params[offset+self.nimages*6:].reshape((-1, 3))
+        errors = self.reprojection_errors(camera_rotations, camera_translations, feature_locations, camera_matrix, distortion)
+        if max_error is None:
+            return errors
+        return np.minimum(errors, max_error)
+
+    
     def bundle_adjustment(self, camera_rotations, camera_translations, xtol=1e-6, method='trf', use_sparsity = True,
-                         max_error = None, fit_cam = False):
+                         max_error = None, fit_cam = False, return_opt = False, curve_fit=False):
         x0 = np.concatenate((camera_rotations.flatten(),
                              camera_translations.flatten(),
                              self.seed_feature_locations.flatten()))
         if fit_cam:
             x0 = np.concatenate((self.camera_matrix[(0,1,0,1),(0,1,2,2)], self.distortion.flatten(), x0))
         initial_errors = self.fit_errors(x0, max_error, fit_cam)
-        if method == 'lm' or use_sparsity == False:
-            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol)
+        if curve_fit:
+            x_dummy = initial_errors
+            y_values = np.zeros(initial_errors.shape)
+            self.opt_result = opt.curve_fit(self.fit_errors_curvefit, x_dummy, y_values, x0, method=method)
         else:
-            jac_sparsity = lil_matrix((initial_errors.shape[0], x0.shape[0]), dtype=int)
-            row = 0
-            offset = 0
-            if fit_cam:
-                offset = 4+self.distortion.shape[0]
-                jac_sparsity[:,:offset] = 1
-            for i in range(self.nimages):
-                for j in np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]:
-                    jac_sparsity[row:row+2, offset+3*i:offset+3*(i+1)] = 1
-                    jac_sparsity[row:row+2, offset+3*(self.nimages+i):offset+3*(self.nimages+i+1)] = 1
-                    jac_sparsity[row:row+2, offset+6*self.nimages+3*j:offset+6*self.nimages+3*(j+1)] = 1
-                    row += 2
-#            print(jac_sparsity.shape, row)
-#            print(list(jac_sparsity.sum(axis=0)))
-#            print(list(jac_sparsity.sum(axis=1)))
-            res = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol, jac_sparsity=jac_sparsity,
-                                   kwargs={"max_error":max_error, "fit_cam": fit_cam})
-        errors = linalg.norm(self.fit_errors(res.x, fit_cam=fit_cam).reshape((-1, 2)), axis=1)
+            if method == 'lm' or use_sparsity == False:
+                self.opt_result = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol)
+            else:
+                jac_sparsity = lil_matrix((initial_errors.shape[0], x0.shape[0]), dtype=int)
+                row = 0
+                offset = 0
+                if fit_cam:
+                    offset = 4+self.distortion.shape[0]
+                    jac_sparsity[:,:offset] = 1
+                for i in range(self.nimages):
+                    for j in np.where(np.any(self.image_feature_locations[i] != 0, axis=1))[0]:
+                        jac_sparsity[row:row+2, offset+3*i:offset+3*(i+1)] = 1
+                        jac_sparsity[row:row+2, offset+3*(self.nimages+i):offset+3*(self.nimages+i+1)] = 1
+                        jac_sparsity[row:row+2, offset+6*self.nimages+3*j:offset+6*self.nimages+3*(j+1)] = 1
+                        row += 2
+    #            print(jac_sparsity.shape, row)
+    #            print(list(jac_sparsity.sum(axis=0)))
+    #            print(list(jac_sparsity.sum(axis=1)))
+                self.opt_result = opt.least_squares(self.fit_errors, x0, verbose=2, method=method, xtol=xtol, jac_sparsity=jac_sparsity,
+                                       kwargs={"max_error":max_error, "fit_cam": fit_cam})
+            errors = linalg.norm(self.fit_errors(self.opt_result.x, fit_cam=fit_cam).reshape((-1, 2)), axis=1)
         if not self.quiet:
             print("mean reprojection error:", np.mean(errors), )
             print("max reprojection error:", max(errors))
         if fit_cam:
-            camera_matrix = build_camera_matrix(res.x[:2],res.x[2:4])
+            camera_matrix = build_camera_matrix(self.opt_result.x[:2],self.opt_result.x[2:4])
             offset = 4+self.distortion.shape[0]
-            distortion = res.x[4:offset].reshape((-1,1))
+            distortion = self.opt_result.x[4:offset].reshape((-1,1))
         else:
             offset = 0
-        self.camera_rotations = res.x[offset:offset+self.nimages*3].reshape((-1, 3))
-        self.camera_translations = res.x[offset+self.nimages*3:offset+self.nimages*6].reshape((-1, 3))
-        self.reco_locations = res.x[offset+self.nimages*6:].reshape((-1, 3))
+        self.camera_rotations = self.opt_result.x[offset:offset+self.nimages*3].reshape((-1, 3))
+        self.camera_translations = self.opt_result.x[offset+self.nimages*3:offset+self.nimages*6].reshape((-1, 3))
+        self.reco_locations = self.opt_result.x[offset+self.nimages*6:].reshape((-1, 3))
         reco_locations = {f: self.reco_locations[i] for f, i in self.feature_index.items()}
+        result = self.camera_rotations, self.camera_translations, reco_locations
         if fit_cam:
-            return self.camera_rotations, self.camera_translations, reco_locations, camera_matrix, distortion
-        else:
-            return self.camera_rotations, self.camera_translations, reco_locations
-
+            result = *result, camera_matrix, distortion
+        if return_opt:
+            result = *result, self.opt_result
+        return result
+    
+    def bundle_adjustment_curvefit(self, camera_rotations, camera_translations, method='trf', xtol=1e-6):
+        x0 = np.concatenate((camera_rotations.flatten(),
+                             camera_translations.flatten(),
+                             self.seed_feature_locations.flatten()))
+        initial_errors = self.fit_errors(x0)
+        x_dummy = initial_errors
+        y_values = np.zeros(initial_errors.shape)
+        self.opt_result = opt.curve_fit(self.fit_errors_curvefit, x_dummy, y_values, x0, verbose=2, method=method, xtol=xtol)
+        errors = linalg.norm(self.fit_errors(self.opt_result[0]).reshape((-1, 2)), axis=1)
+        if not self.quiet:
+            print("mean reprojection error:", np.mean(errors), )
+            print("max reprojection error:", max(errors))
+        self.camera_rotations = self.opt_result[0][:self.nimages*3].reshape((-1, 3))
+        self.camera_translations = self.opt_result[0][self.nimages*3:self.nimages*6].reshape((-1, 3))
+        self.reco_locations = self.opt_result[0][self.nimages*6:].reshape((-1, 3))
+        reco_locations = {f: self.reco_locations[i] for f, i in self.feature_index.items()}
+        return self.camera_rotations, self.camera_translations, reco_locations, self.opt_result
+        
     def fit(self):
         camera_rotations, camera_translations = self.estimate_camera_poses()
         return self.bundle_adjustment(camera_rotations, camera_translations)
